@@ -32,12 +32,15 @@
     #map { height: 80vh; min-height: 480px; }
     .panel { background: var(--bg2); padding: 10px 12px; border-bottom: 1px solid var(--border); }
     .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 8px 0; font-weight: 600; }
-    .position-row { display: flex; gap: 16px; align-items: baseline; }
+    .position-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+    .position-row .km-block { display: flex; gap: 16px; align-items: baseline; flex: 1; min-width: 0; }
     .position-row .km { font-size: 28px; font-weight: 600; color: var(--accent); }
     .position-row .km-unit { font-size: 12px; color: var(--muted); margin-left: 4px; }
     .position-row .off-track { font-size: 11px; color: var(--muted); }
     .position-row .off-track.warning { color: var(--red); }
-    .ratio-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; margin-top: 6px; }
+    .position-row .refresh-block { flex: 0 0 auto; }
+    .position-row .refresh-block button { padding: 12px 14px; }
+    .ratio-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; margin-top: 10px; }
     .ratio-row .v { font-size: 16px; font-weight: 600; }
     button { background: #1f2937; color: var(--fg); border: 1px solid var(--border); padding: 8px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
     button:hover { background: #2d3744; }
@@ -58,9 +61,12 @@
     .checkpoints { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
     .checkpoint { background: var(--bg); padding: 8px; border-radius: 4px; text-align: center; }
     .checkpoint .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; }
-    .checkpoint .km { font-size: 14px; font-weight: 600; }
-    .checkpoint .eta-static { font-size: 11px; color: var(--muted); }
-    .checkpoint .eta-adaptive { font-size: 12px; color: var(--accent); font-weight: 600; }
+    .checkpoint .km { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    .checkpoint .arrival { font-size: 14px; color: var(--accent); font-weight: 700; line-height: 1.2; }
+    .checkpoint .duration { font-size: 12px; color: var(--accent); margin-top: 2px; }
+    .checkpoint .arrival.theoretical { color: var(--fg); opacity: 0.75; font-weight: 600; }
+    .checkpoint .duration.theoretical { color: var(--muted); }
+    .checkpoint .remaining { font-size: 11px; color: var(--muted); margin-top: 4px; }
     .history-row { display: grid; grid-template-columns: 60px 1fr 1fr 60px; gap: 6px; font-size: 11px; padding: 4px 0; border-bottom: 1px solid var(--border); }
     .history-row .label { color: var(--muted); }
     .stop-prompt { background: #7f1d1d; color: #fee2e2; padding: 10px; border-radius: 6px; margin-top: 8px; display: none; }
@@ -84,10 +90,15 @@
   <div class="panel">
     <h2>Position</h2>
     <div class="position-row">
-      <div><span id="cur-km" class="km">—</span><span class="km-unit">km</span></div>
-      <div>
-        <div id="cur-percent" class="off-track">—</div>
-        <div id="cur-off-track" class="off-track">—</div>
+      <div class="km-block">
+        <div><span id="cur-km" class="km">—</span><span class="km-unit">km</span></div>
+        <div>
+          <div id="cur-percent" class="off-track">—</div>
+          <div id="cur-off-track" class="off-track">—</div>
+        </div>
+      </div>
+      <div class="refresh-block">
+        <button class="primary" id="btn-refresh">📍 Refresh GPS</button>
       </div>
     </div>
     <div class="ratio-row">
@@ -96,7 +107,6 @@
         <div id="cur-ratio" class="v">—</div>
       </div>
       <div>
-        <button class="primary" id="btn-refresh" style="width:100%; margin-bottom:6px;">📍 Refresh GPS</button>
         <div class="label small">Vitesse réelle / théorique</div>
         <div id="cur-speed" class="v">—</div>
       </div>
@@ -842,35 +852,35 @@ function updatePaceState({
       const now = Date.now();
       const html = CHECKPOINTS.map(c => {
         let etaH = null;
-        let etaH_static = null;
         let remainingKm = null;
         if (last) {
           const dKm = distAhead(last.km, c.km);
           if (dKm > 0.001 || (IS_LOOP && Math.abs(dKm) < 0.5)) {
             remainingKm = dKm;
             if (IS_LOOP && c.km < last.km) {
-              etaH_static = predictedHSegment(last.km, TOTAL_KM, POLY_KM, CUM_PREDICTED_H)
-                          + predictedHSegment(0, c.km, POLY_KM, CUM_PREDICTED_H);
               const h1 = etaToTarget(last.km, TOTAL_KM, POLY_KM, CUM_PREDICTED_H, rGlobal);
               const h2 = etaToTarget(0, c.km, POLY_KM, CUM_PREDICTED_H, rGlobal);
               etaH = h1 + h2;
             } else {
-              etaH_static = predictedHSegment(last.km, c.km, POLY_KM, CUM_PREDICTED_H);
               etaH = etaToTarget(last.km, c.km, POLY_KM, CUM_PREDICTED_H, rGlobal);
             }
           }
         }
-        const arrivalAdaptive = (etaH !== null) ? new Date(now + etaH * 3600 * 1000) : null;
-        const arrivalStatic = (etaH_static !== null) ? new Date(now + etaH_static * 3600 * 1000) : null;
-        const etaStr = arrivalAdaptive ? formatClock(arrivalAdaptive) : "—";
-        const staticStr = arrivalStatic ? `th: ${formatClock(arrivalStatic)}` : "";
+        // When rGlobal is null, etaH equals the theoretical/static prediction.
+        const isTheoretical = (rGlobal === null);
+        const thCls = isTheoretical ? " theoretical" : "";
+        const arrival = (etaH !== null) ? new Date(now + etaH * 3600 * 1000) : null;
+        const arrivalStr = arrival ? formatClock(arrival) : "—";
+        const durationStr = (etaH !== null && etaH > 0) ? `+ ${formatHm(etaH)}` : "";
         const remaining = (remainingKm !== null) ? `${remainingKm.toFixed(1)}km` : "✓";
+        const thNote = isTheoretical && etaH !== null ? '<div class="small" style="opacity:0.7;">(théorique)</div>' : '';
         return `<div class="checkpoint">
           <div class="lbl">${c.label}</div>
           <div class="km">km ${c.km.toFixed(1)}</div>
-          <div class="eta-adaptive">${etaStr}</div>
-          <div class="eta-static">${staticStr}</div>
-          <div class="small">${remaining}</div>
+          <div class="arrival${thCls}">${arrivalStr}</div>
+          <div class="duration${thCls}">${durationStr}</div>
+          ${thNote}
+          <div class="remaining">${remaining}</div>
         </div>`;
       }).join("");
       el.innerHTML = html;
