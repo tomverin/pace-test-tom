@@ -11,11 +11,11 @@
     :root {
       --bg: #0f1419;
       --bg2: #1a1f26;
-      --fg: #e5e7eb;
-      --muted: #9ca3af;
+      --fg: #f3f4f6;
+      --muted: #b8c0cd;
       --accent: #fbbf24;
-      --green: #34d399;
-      --red: #f87171;
+      --green: #4ade80;
+      --red: #fb7185;
       --border: #2a3038;
     }
     * { box-sizing: border-box; }
@@ -47,14 +47,17 @@
     button.primary { background: var(--accent); color: #1a1100; border-color: var(--accent); font-weight: 600; }
     button.danger { background: #7f1d1d; color: #fee2e2; border-color: #7f1d1d; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-    .list { max-height: 28vh; overflow-y: auto; }
-    .list-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .list { max-height: 32vh; overflow-y: auto; }
+    .list-item { padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 18px; }
     .list-item:last-child { border-bottom: none; }
-    .list-item .row1 { display: flex; justify-content: space-between; align-items: baseline; }
-    .list-item .name { font-weight: 600; }
-    .list-item .km-tag { font-size: 11px; color: var(--muted); }
-    .list-item .row2 { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 2px; }
-    .list-item .eta { color: var(--accent); font-weight: 600; }
+    .list-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .list-item .name { font-weight: 700; font-size: 18px; }
+    .list-item .km-tag { font-size: 15px; color: var(--muted); }
+    .list-item .row2 { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 15px; margin-top: 6px; }
+    .list-item .row2 .km-tag { font-size: 15px; }
+    .list-item .eta { color: var(--accent); font-weight: 700; font-size: 18px; }
+    .list-item .hours { font-size: 14px; color: var(--muted); margin-top: 6px; }
+    .list-item .status-open, .list-item .status-closed, .list-item .status-unknown { font-size: 15px; font-weight: 600; }
     .status-open { color: var(--green); }
     .status-closed { color: var(--red); }
     .status-unknown { color: var(--muted); }
@@ -131,14 +134,15 @@
     <div id="poi-list" class="list"></div>
   </div>
 
-  <details class="panel">
-    <summary><strong>Historique consultations (<span id="hist-count">0</span>)</strong></summary>
-    <div id="history" class="list" style="max-height: none;"></div>
-    <div class="actions">
-      <button id="btn-export">📋 Export JSON</button>
-      <button class="danger" id="btn-clear">🗑️ Effacer historique</button>
+  <div class="panel" style="padding: 8px 12px;">
+    <div class="actions" style="justify-content: space-between; align-items: center;">
+      <span class="small"><span id="hist-count">0</span> consultations enregistrées</span>
+      <div style="display: flex; gap: 8px;">
+        <button id="btn-export">📋 Export JSON</button>
+        <button class="danger" id="btn-clear">🗑️ Reset</button>
+      </div>
     </div>
-  </details>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -925,29 +929,14 @@ function updatePaceState({
             <span class="km-tag">km ${p.route_km.toFixed(1)} • dans ${p.dist_ahead.toFixed(1)}km • ${formatHm(etaH)}</span>
             <span class="${statusCls}">${statusLbl}</span>
           </div>
-          <div class="small">${oh}</div>
+          <div class="hours">${oh}</div>
         </div>`;
       }).join("");
       document.getElementById("poi-list").innerHTML = html || "<div class='small'>Aucun POI à venir</div>";
     }
 
     function renderHistory() {
-      const el = document.getElementById("history");
       document.getElementById("hist-count").textContent = history.length;
-      if (history.length === 0) { el.innerHTML = "<div class='small'>Aucune consultation</div>"; return; }
-      const rows = history.map((h, i) => {
-        const dt = new Date(h.ts * 1000);
-        const dKm = i === 0 ? "—" : (h.km - history[i - 1].km).toFixed(2);
-        const ex = h.excluded ? "(exclu)" : "";
-        const r = h.r_inst !== undefined && h.r_inst !== null ? h.r_inst.toFixed(3) : "—";
-        return `<div class="history-row">
-          <div class="label">#${i + 1}</div>
-          <div>km ${h.km.toFixed(2)} • Δ ${dKm}</div>
-          <div>${formatClock(dt)} • r=${r}</div>
-          <div class="label">${ex}</div>
-        </div>`;
-      }).join("");
-      el.innerHTML = rows;
     }
 
     // ===== Actions =====
