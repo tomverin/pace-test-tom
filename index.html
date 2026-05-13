@@ -158,6 +158,7 @@
       <span class="small"><span id="hist-count">0</span> consultations enregistrées</span>
       <div style="display: flex; gap: 8px;">
         <button id="btn-export">📋 Export JSON</button>
+        <button id="btn-new-session">Nouvelle session</button>
         <button class="danger" id="btn-clear">🗑️ Reset</button>
       </div>
     </div>
@@ -533,9 +534,30 @@ const STOP_DETECT_RATIO = 1.5;       // realized / predicted > this triggers sto
 const STOP_DETECT_DELTA_H = 0.25;    // AND delta > 15 min absolute
 const SLEEP_GAP_H = 4.0;             // gap > 4 h is treated as sleep, excluded from ratio
 const NOISE_GAP_S = 300;             // < 5 min between consultations is GPS noise
+const MIN_RATIO_SEGMENT_KM = 0.5;     // ignore GPS wiggles / very small movement
+const MAX_PLAUSIBLE_SPEED_KMH = 90;   // reject projection jumps / wrong loop branch
+
+function routeTotalKm(track, totalKm) {
+  if (totalKm && totalKm > 0) return totalKm;
+  if (track && track.length > 0) return track[track.length - 1].km;
+  return null;
+}
+
+function routeDeltaKm(kmStart, kmEnd, track, { isLoop = false, totalKm = null } = {}) {
+  const total = routeTotalKm(track, totalKm);
+  if (isLoop && total && total > 0) {
+    return ((kmEnd - kmStart) % total + total) % total;
+  }
+  return kmEnd - kmStart;
+}
 
 // Predicted hours to traverse a segment between two km markers.
-function predictedHSegment(kmStart, kmEnd, track, cumPredictedH) {
+function predictedHSegment(kmStart, kmEnd, track, cumPredictedH, opts = {}) {
+  const total = routeTotalKm(track, opts.totalKm);
+  if (opts.isLoop && total && total > 0 && kmEnd < kmStart) {
+    return predictedHAtKm(total, track, cumPredictedH) - predictedHAtKm(kmStart, track, cumPredictedH)
+         + predictedHAtKm(kmEnd, track, cumPredictedH);
+  }
   return predictedHAtKm(kmEnd, track, cumPredictedH)
        - predictedHAtKm(kmStart, track, cumPredictedH);
 }
@@ -594,55 +616,99 @@ function updatePaceState({
   cumPredictedH,
   rGlobalPrev,
   alpha = EMA_ALPHA,
+  isLoop = false,
+  totalKm = null,
+  minSegmentKm = MIN_RATIO_SEGMENT_KM,
+  maxPlausibleSpeedKmh = MAX_PLAUSIBLE_SPEED_KMH,
 }) {
   if (!history || history.length === 0) {
     return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo: null, stopSuspected: false };
   }
 
-  // Find the most recent non-excluded prior consultation.
+  // Find the most recent non-excluded prior consultation that is old enough
+  // to compare against. This lets frequent refreshes accumulate into a usable
+  // segment instead of being blocked forever by the last <5 min GPS sample.
   let prev = null;
+  let prevIdx = -1;
+  let latestCandidate = null;
+  let latestCandidateIdx = -1;
   for (let i = history.length - 1; i >= 0; i--) {
-    if (!history[i].excluded) {
+    if (history[i].excluded) continue;
+    if (latestCandidate === null) {
+      latestCandidate = history[i];
+      latestCandidateIdx = i;
+    }
+    if (newConsultation.ts - history[i].ts >= NOISE_GAP_S) {
       prev = history[i];
+      prevIdx = i;
       break;
     }
   }
   if (prev === null) {
-    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo: null, stopSuspected: false };
+    const segmentInfo = latestCandidate ? {
+      predicted_h: predictedHSegment(latestCandidate.km, newConsultation.km, track, cumPredictedH, { isLoop, totalKm }),
+      realized_h: (newConsultation.ts - latestCandidate.ts) / 3600,
+      delta_km: routeDeltaKm(latestCandidate.km, newConsultation.km, track, { isLoop, totalKm }),
+      raw_delta_km: newConsultation.km - latestCandidate.km,
+      delta_h: (newConsultation.ts - latestCandidate.ts) / 3600,
+      prev_idx: latestCandidateIdx,
+      reason: 'noise_gap',
+    } : null;
+    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
   }
 
   const dtS = newConsultation.ts - prev.ts;
   const realizedH = dtS / 3600;
-  const deltaKm = newConsultation.km - prev.km;
+  const rawDeltaKm = newConsultation.km - prev.km;
+  const deltaKm = routeDeltaKm(prev.km, newConsultation.km, track, { isLoop, totalKm });
+  const predictedH = predictedHSegment(prev.km, newConsultation.km, track, cumPredictedH, { isLoop, totalKm });
+  const speedKmh = realizedH > 0 ? deltaKm / realizedH : null;
+  const total = routeTotalKm(track, totalKm);
 
   const segmentInfo = {
-    predicted_h: predictedHSegment(prev.km, newConsultation.km, track, cumPredictedH),
+    predicted_h: predictedH,
     realized_h: realizedH,
     delta_km: deltaKm,
+    raw_delta_km: rawDeltaKm,
     delta_h: realizedH,
-    prev_idx: history.indexOf(prev),
+    speed_kmh: speedKmh,
+    prev_idx: prevIdx,
   };
-
-  // Noise: too close in time → skip update
-  if (dtS < NOISE_GAP_S) {
-    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
-  }
 
   // Sleep gap: too long → skip ratio update but the new point will anchor future segments
   if (realizedH > SLEEP_GAP_H) {
+    segmentInfo.reason = 'sleep_gap';
+    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
+  }
+
+  // If rider went backwards or stayed put, ratio is meaningless
+  if (deltaKm <= 0) {
+    segmentInfo.reason = 'backwards_or_still';
+    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
+  }
+
+  if (isLoop && total && rawDeltaKm < 0 && deltaKm > total * 0.5) {
+    segmentInfo.reason = 'loop_projection_jump';
+    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
+  }
+
+  if (deltaKm < minSegmentKm) {
+    segmentInfo.reason = 'too_short';
+    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
+  }
+
+  if (speedKmh !== null && speedKmh > maxPlausibleSpeedKmh) {
+    segmentInfo.reason = 'implausible_speed';
     return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected: false };
   }
 
   // Stop heuristic check (don't auto-update if suspected)
-  const stopSuspected = detectStopHeuristic(segmentInfo.predicted_h, realizedH);
+  const stopSuspected = detectStopHeuristic(segmentInfo.predicted_h, realizedH)
+    && !newConsultation.include_stop_segment;
 
-  // If rider went backwards or stayed put, ratio is meaningless
-  if (deltaKm <= 0) {
-    return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected };
-  }
-
-  const r = rInst(segmentInfo.predicted_h, realizedH);
+  const r = rInst(predictedH, realizedH);
   if (r === null) {
+    segmentInfo.reason = 'invalid_ratio';
     return { rInst: null, rGlobal: rGlobalPrev ?? null, segmentInfo, stopSuspected };
   }
 
@@ -706,21 +772,18 @@ function updatePaceState({
 
     function recomputeRGlobalFromHistory(h) {
       let r = null;
-      for (let i = 1; i < h.length; i++) {
+      for (let i = 0; i < h.length; i++) {
         if (h[i].excluded || h[i].excluded_segment) continue;
-        const prev = findPrevNonExcluded(h, i);
-        if (prev === null) continue;
-        const dtS = h[i].ts - h[prev].ts;
-        if (dtS < 300) continue;
-        const realizedH = dtS / 3600;
-        if (realizedH > 4.0) continue;
-        const predH = predictedHSegment(h[prev].km, h[i].km, POLY_KM, CUM_PREDICTED_H);
-        const dKm = h[i].km - h[prev].km;
-        if (dKm <= 0 || predH <= 0) continue;
-        if (detectStopHeuristic(predH, realizedH) && !h[i].include_stop_segment) continue;
-        const rInstVal = rInst(predH, realizedH);
-        if (rInstVal === null) continue;
-        r = clampRatio(emaUpdate(r, rInstVal));
+        const result = updatePaceState({
+          history: h.slice(0, i),
+          newConsultation: h[i],
+          track: POLY_KM,
+          cumPredictedH: CUM_PREDICTED_H,
+          rGlobalPrev: r,
+          isLoop: IS_LOOP,
+          totalKm: TOTAL_KM,
+        });
+        r = result.rGlobal;
       }
       return r;
     }
@@ -925,6 +988,16 @@ function updatePaceState({
         const ageS = Math.round((Date.now() / 1000) - last.ts);
         updateGpsBadge(ageS < 120, ageS);
         setCurrentPosition(last.lat, last.lon, last.km, last.off_track_m, recenter);
+      } else {
+        document.getElementById("cur-km").textContent = "—";
+        document.getElementById("cur-percent").textContent = "—";
+        document.getElementById("cur-off-track").textContent = "—";
+        updateGpsBadge(null);
+        if (currentPosMarker) {
+          currentPosMarker.remove();
+          currentPosMarker = null;
+        }
+        firstFix = true;
       }
 
       // Ratio
@@ -1071,6 +1144,8 @@ function updatePaceState({
           track: POLY_KM,
           cumPredictedH: CUM_PREDICTED_H,
           rGlobalPrev: rGlobal,
+          isLoop: IS_LOOP,
+          totalKm: TOTAL_KM,
         });
 
         newEntry.r_inst = r.rInst;
@@ -1110,19 +1185,18 @@ function updatePaceState({
       } else {
         // User said no, the segment was legit slow → apply ratio update
         last.include_stop_segment = true;
-        const prev = findPrevNonExcluded(history, history.length - 1);
-        if (prev !== null) {
-          const dtS = last.ts - history[prev].ts;
-          const realizedH = dtS / 3600;
-          const predH = predictedHSegment(history[prev].km, last.km, POLY_KM, CUM_PREDICTED_H);
-          if (predH > 0 && realizedH > 0) {
-            const rI = rInst(predH, realizedH);
-            if (rI !== null) {
-              rGlobal = clampRatio(emaUpdate(rGlobal, rI));
-              last.r_inst = rI;
-            }
-          }
-        }
+        const result = updatePaceState({
+          history: history.slice(0, -1),
+          newConsultation: last,
+          track: POLY_KM,
+          cumPredictedH: CUM_PREDICTED_H,
+          rGlobalPrev: rGlobal,
+          isLoop: IS_LOOP,
+          totalKm: TOTAL_KM,
+        });
+        rGlobal = result.rGlobal;
+        last.r_inst = result.rInst;
+        last.segment_info = result.segmentInfo;
       }
       saveHistory(history);
       pendingNew = null;
@@ -1137,6 +1211,7 @@ function updatePaceState({
         total_km: TOTAL_KM,
         exported_at: new Date().toISOString(),
         r_global_final: rGlobal,
+        storage_key: STORAGE_KEY,
         history,
       };
       const text = JSON.stringify(blob, null, 2);
@@ -1152,9 +1227,25 @@ function updatePaceState({
       if (!confirm("Effacer tout l'historique ?")) return;
       history = [];
       rGlobal = null;
+      pendingNew = null;
+      pendingSegment = null;
       saveHistory(history);
       try { sessionStorage.removeItem(POSITION_CACHE_KEY); } catch (e) {}
+      document.getElementById("stop-prompt").classList.remove("visible");
       render();
+    }
+
+    function startNewSession() {
+      if (!confirm("Démarrer une nouvelle session et effacer l'historique local de cette route ?")) return;
+      history = [];
+      rGlobal = null;
+      pendingNew = null;
+      pendingSegment = null;
+      saveHistory(history);
+      try { sessionStorage.removeItem(POSITION_CACHE_KEY); } catch (e) {}
+      document.getElementById("stop-prompt").classList.remove("visible");
+      render();
+      recordConsultation({forceGps: true});
     }
 
     function setPoiMode(nextMode) {
@@ -1179,6 +1270,7 @@ function updatePaceState({
     document.getElementById("btn-stop-yes").addEventListener("click", () => resolveStopPrompt(true));
     document.getElementById("btn-stop-no").addEventListener("click", () => resolveStopPrompt(false));
     document.getElementById("btn-export").addEventListener("click", exportHistory);
+    document.getElementById("btn-new-session").addEventListener("click", startNewSession);
     document.getElementById("btn-clear").addEventListener("click", clearHistory);
     document.querySelectorAll("[data-poi-mode]").forEach(btn => {
       btn.addEventListener("click", () => setPoiMode(btn.dataset.poiMode));
