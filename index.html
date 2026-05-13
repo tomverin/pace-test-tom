@@ -29,7 +29,7 @@
     .badge.stale { background: #7f1d1d; color: #fee2e2; }
     .badge.offline { background: #7f1d1d; color: #fee2e2; }
     .badge.online { background: #065f46; color: #d1fae5; }
-    #map { height: 60vh; min-height: 360px; }
+    #map { height: 80vh; min-height: 480px; }
     .panel { background: var(--bg2); padding: 10px 12px; border-bottom: 1px solid var(--border); }
     .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 8px 0; font-weight: 600; }
     .position-row { display: flex; gap: 16px; align-items: baseline; }
@@ -91,11 +91,15 @@
       </div>
     </div>
     <div class="ratio-row">
-      <div><div class="label small">Ratio adaptatif</div><div id="cur-ratio" class="v">—</div></div>
-      <div><div class="label small">Vitesse réelle / théorique</div><div id="cur-speed" class="v">—</div></div>
-    </div>
-    <div class="actions">
-      <button class="primary" id="btn-refresh">📍 Refresh GPS</button>
+      <div>
+        <div class="label small">Ratio adaptatif</div>
+        <div id="cur-ratio" class="v">—</div>
+      </div>
+      <div>
+        <button class="primary" id="btn-refresh" style="width:100%; margin-bottom:6px;">📍 Refresh GPS</button>
+        <div class="label small">Vitesse réelle / théorique</div>
+        <div id="cur-speed" class="v">—</div>
+      </div>
     </div>
     <div id="stop-prompt" class="stop-prompt">
       <div class="q">Pause incluse dans ce segment ?</div>
@@ -620,6 +624,19 @@ function updatePaceState({
     const POIS = [{"osm_id":"node/6173431432","lat":46.3676781,"lon":6.0157094,"name":"Water","category":"WATER","tags":{"amenity":"drinking_water","man_made":"water_tap"},"opening_hours":null,"phone":null,"addr":"","route_km":23.957,"match_distance_m":10.7},{"osm_id":"node/1268913059","lat":46.3671574,"lon":6.0153594,"name":"Le Slalom","category":"CAFE","tags":{"amenity":"cafe","name":"Le Slalom"},"opening_hours":null,"phone":null,"addr":"","route_km":24.028,"match_distance_m":29.2},{"osm_id":"node/9893652607","lat":46.3670613,"lon":6.0146,"name":"Toilets","category":"TOILETS","tags":{"access":"private","amenity":"toilets","toilets:disposal":"flush"},"opening_hours":null,"phone":null,"addr":"","route_km":24.086,"match_distance_m":10.7},{"osm_id":"node/1268913053","lat":46.3574025,"lon":6.0174002,"name":"Le Grand Tétras","category":"CAFE","tags":{"amenity":"cafe","name":"Le Grand Tétras"},"opening_hours":null,"phone":null,"addr":"","route_km":26.751,"match_distance_m":26.7},{"osm_id":"node/1268913067","lat":46.3674481,"lon":6.0162943,"name":"O P'tit Encas","category":"FAST_FOOD","tags":{"amenity":"fast_food","check_date":"2026-01-18","cuisine":"french;regional","name":"O P'tit Encas"},"opening_hours":null,"phone":null,"addr":"","route_km":29.524,"match_distance_m":19.0},{"osm_id":"node/1268913072","lat":46.3670734,"lon":6.0165178,"name":"Toilets","category":"TOILETS","tags":{"amenity":"toilets"},"opening_hours":null,"phone":null,"addr":"","route_km":29.553,"match_distance_m":14.7},{"osm_id":"way/1382278331","lat":46.3670697,"lon":6.0168618,"name":"Toilets","category":"TOILETS","tags":{"access":"yes","amenity":"toilets","building":"yes","wheelchair":"yes"},"opening_hours":null,"phone":null,"addr":"","route_km":29.588,"match_distance_m":6.9},{"osm_id":"way/395463140","lat":46.358751,"lon":6.0258466,"name":"Toilets","category":"TOILETS","tags":{"amenity":"toilets","building":"yes","unisex":"yes","wheelchair":"yes"},"opening_hours":null,"phone":null,"addr":"","route_km":31.697,"match_distance_m":2.6}];
     const CHECKPOINTS = [{"label":"Q1 (25%)","km":11.804,"lat":46.292403,"lon":5.978475},{"label":"Q2 (50%)","km":23.603,"lat":46.366558,"lon":6.011654},{"label":"Q3 (75%)","km":35.431,"lat":46.352575,"lon":6.035596},{"label":"Fin","km":47.214,"lat":46.284973,"lon":6.017966}];
     const TOTAL_KM = TRACK[TRACK.length - 1].km;
+    const IS_LOOP = true;
+
+    // Forward distance along the route. On a loop, wraps modulo TOTAL_KM
+    // so POIs before us in km-space (already passed) reappear "after" we
+    // cross the start/end junction. On a linear route, returns negative for
+    // points behind us.
+    function distAhead(curKm, targetKm) {
+      if (IS_LOOP) {
+        const d = ((targetKm - curKm) % TOTAL_KM + TOTAL_KM) % TOTAL_KM;
+        return d;
+      }
+      return targetKm - curKm;
+    }
 
     // ===== State =====
     const STORAGE_KEY = "pace-test-tom:history-v1";
@@ -826,15 +843,28 @@ function updatePaceState({
       const html = CHECKPOINTS.map(c => {
         let etaH = null;
         let etaH_static = null;
-        if (last && last.km < c.km) {
-          etaH_static = predictedHSegment(last.km, c.km, POLY_KM, CUM_PREDICTED_H);
-          etaH = etaToTarget(last.km, c.km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+        let remainingKm = null;
+        if (last) {
+          const dKm = distAhead(last.km, c.km);
+          if (dKm > 0.001 || (IS_LOOP && Math.abs(dKm) < 0.5)) {
+            remainingKm = dKm;
+            if (IS_LOOP && c.km < last.km) {
+              etaH_static = predictedHSegment(last.km, TOTAL_KM, POLY_KM, CUM_PREDICTED_H)
+                          + predictedHSegment(0, c.km, POLY_KM, CUM_PREDICTED_H);
+              const h1 = etaToTarget(last.km, TOTAL_KM, POLY_KM, CUM_PREDICTED_H, rGlobal);
+              const h2 = etaToTarget(0, c.km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+              etaH = h1 + h2;
+            } else {
+              etaH_static = predictedHSegment(last.km, c.km, POLY_KM, CUM_PREDICTED_H);
+              etaH = etaToTarget(last.km, c.km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+            }
+          }
         }
         const arrivalAdaptive = (etaH !== null) ? new Date(now + etaH * 3600 * 1000) : null;
         const arrivalStatic = (etaH_static !== null) ? new Date(now + etaH_static * 3600 * 1000) : null;
         const etaStr = arrivalAdaptive ? formatClock(arrivalAdaptive) : "—";
         const staticStr = arrivalStatic ? `th: ${formatClock(arrivalStatic)}` : "";
-        const remaining = (last && last.km < c.km) ? `${(c.km - last.km).toFixed(1)}km` : "✓";
+        const remaining = (remainingKm !== null) ? `${remainingKm.toFixed(1)}km` : "✓";
         return `<div class="checkpoint">
           <div class="lbl">${c.label}</div>
           <div class="km">km ${c.km.toFixed(1)}</div>
@@ -849,14 +879,27 @@ function updatePaceState({
     function renderPois() {
       const last = history[history.length - 1];
       const curKm = last ? last.km : 0;
-      const upcoming = POIS.filter(p => p.route_km >= curKm - 0.5);
-      upcoming.sort((a, b) => a.route_km - b.route_km);
+      // Compute forward distance for each POI (circular if loop).
+      const scored = POIS.map(p => ({...p, dist_ahead: distAhead(curKm, p.route_km)}));
+      // Keep only POIs strictly ahead (allow tiny tolerance for the one we might be ON).
+      // On loop: 0..TOTAL_KM range, all POIs ahead.
+      // On linear: drop POIs behind us (negative dist).
+      const upcoming = scored.filter(p => p.dist_ahead >= -0.5);
+      upcoming.sort((a, b) => a.dist_ahead - b.dist_ahead);
       const visible = upcoming.slice(0, 12);
       document.getElementById("poi-count").textContent = visible.length;
       const now = Date.now();
       const html = visible.map(p => {
-        const dist = p.route_km - curKm;
-        const etaH = etaToTarget(curKm, p.route_km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+        // Predict time over the actual segment, accounting for loop wraparound.
+        let etaH;
+        if (IS_LOOP && p.route_km < curKm) {
+          // Going around the loop: time from curKm to TOTAL_KM, plus time from 0 to poi_km
+          const h1 = etaToTarget(curKm, TOTAL_KM, POLY_KM, CUM_PREDICTED_H, rGlobal);
+          const h2 = etaToTarget(0, p.route_km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+          etaH = h1 + h2;
+        } else {
+          etaH = etaToTarget(curKm, p.route_km, POLY_KM, CUM_PREDICTED_H, rGlobal);
+        }
         const arrival = new Date(now + etaH * 3600 * 1000);
         const parsed = parseOpeningHours(p.opening_hours);
         const status = formatStatus(parsed, arrival);
@@ -869,7 +912,7 @@ function updatePaceState({
             <span class="eta">${formatClock(arrival)}</span>
           </div>
           <div class="row2">
-            <span class="km-tag">km ${p.route_km.toFixed(1)} • dans ${dist.toFixed(1)}km • ${formatHm(etaH)}</span>
+            <span class="km-tag">km ${p.route_km.toFixed(1)} • dans ${p.dist_ahead.toFixed(1)}km • ${formatHm(etaH)}</span>
             <span class="${statusCls}">${statusLbl}</span>
           </div>
           <div class="small">${oh}</div>
