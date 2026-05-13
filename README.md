@@ -16,5 +16,7 @@ Current V1 test scope:
 - frequent refreshes accumulate to the latest eligible 5 min anchor
 - loop and projection-jump guards for bad ratio updates
 - stop segments excluded without losing the current position as next anchor
+- collapsible debug segment panel for post-ride/debrief visibility
+- route surface overlay: paved solid, unpaved dotted, unknown dotted grey
 - POI modes: upcoming 30 km or all, with water/solid/services filters
 - clickable POI list rows that center and open the map marker
