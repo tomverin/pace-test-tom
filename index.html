@@ -47,8 +47,16 @@
     button.primary { background: var(--accent); color: #1a1100; border-color: var(--accent); font-weight: 600; }
     button.danger { background: #7f1d1d; color: #fee2e2; border-color: #7f1d1d; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .poi-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px 0; align-items: center; }
+    .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .segmented button { border: 0; border-radius: 0; background: var(--bg); padding: 7px 10px; }
+    .segmented button.active, .filter-btn.active { background: var(--accent); color: #1a1100; font-weight: 700; }
+    .poi-filter-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-btn { padding: 7px 9px; font-size: 12px; }
     .list { max-height: 32vh; overflow-y: auto; }
     .list-item { padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 18px; }
+    button.list-item { width: 100%; background: transparent; color: inherit; border-left: 0; border-right: 0; border-top: 0; border-radius: 0; text-align: left; cursor: pointer; }
+    button.list-item:hover { background: rgba(251, 191, 36, 0.08); }
     .list-item:last-child { border-bottom: none; }
     .list-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
     .list-item .name { font-weight: 700; font-size: 18px; }
@@ -131,6 +139,17 @@
 
   <div class="panel">
     <h2>Prochains POIs (<span id="poi-count">0</span>)</h2>
+    <div class="poi-controls">
+      <div class="segmented" aria-label="Mode POI">
+        <button type="button" class="active" data-poi-mode="next">Prochains</button>
+        <button type="button" data-poi-mode="all">Tous</button>
+      </div>
+      <div class="poi-filter-buttons" aria-label="Filtres POI">
+        <button type="button" class="filter-btn active" data-poi-filter="WATER">Eau</button>
+        <button type="button" class="filter-btn active" data-poi-filter="FOOD">Solide</button>
+        <button type="button" class="filter-btn active" data-poi-filter="SERVICES">Services</button>
+      </div>
+    </div>
     <div id="poi-list" class="list"></div>
   </div>
 
@@ -148,26 +167,37 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
   <script>
+    globalThis.GRADE_SPEED_MODEL = {"name":"corsica_555_race_king_30h","description":"Terrain-aware moving speed model for Corsica 555 planning: Race King 2.2, no scheduled sleep, 30 h target.","grade_span_m":300,"brackets":[{"min_grade":6,"paved":9.0,"offroad":7.0},{"min_grade":3,"paved":13.0,"offroad":10.0},{"min_grade":1,"paved":19.0,"offroad":14.0},{"min_grade":-1,"paved":24.0,"offroad":18.0},{"min_grade":-3,"paved":29.0,"offroad":22.0},{"min_grade":-6,"paved":33.0,"offroad":22.0},{"min_grade":null,"paved":36.0,"offroad":22.0}]};
 /* === grade_speed.js === */
 
-// Terrain-aware speed lookup. Same brackets as scripts/build_corsica_site.py:140-152.
+// Terrain-aware speed lookup. Keep this fallback in sync with
+// scripts/lib/grade_speed_model.json; tests compare them so drift is caught.
 // Returns speed in km/h for a given grade (%) and surface (paved or offroad).
 
+const DEFAULT_GRADE_SPEED_MODEL = {
+  name: "corsica_555_race_king_30h",
+  grade_span_m: 300,
+  brackets: [
+    { min_grade: 6, paved: 9.0, offroad: 7.0 },
+    { min_grade: 3, paved: 13.0, offroad: 10.0 },
+    { min_grade: 1, paved: 19.0, offroad: 14.0 },
+    { min_grade: -1, paved: 24.0, offroad: 18.0 },
+    { min_grade: -3, paved: 29.0, offroad: 22.0 },
+    { min_grade: -6, paved: 33.0, offroad: 22.0 },
+    { min_grade: null, paved: 36.0, offroad: 22.0 },
+  ],
+};
+
+const GRADE_SPEED_MODEL = globalThis.GRADE_SPEED_MODEL || DEFAULT_GRADE_SPEED_MODEL;
+
 function gradeSpeed(grade, offroad) {
-  if (offroad) {
-    if (grade >= 6) return 7.0;
-    if (grade >= 3) return 10.0;
-    if (grade >= 1) return 14.0;
-    if (grade >= -1) return 18.0;
-    return 22.0;
+  const key = offroad ? "offroad" : "paved";
+  for (const bracket of GRADE_SPEED_MODEL.brackets) {
+    if (bracket.min_grade === null || grade >= bracket.min_grade) {
+      return bracket[key];
+    }
   }
-  if (grade >= 6) return 9.0;
-  if (grade >= 3) return 13.0;
-  if (grade >= 1) return 19.0;
-  if (grade >= -1) return 24.0;
-  if (grade >= -3) return 29.0;
-  if (grade >= -6) return 33.0;
-  return 36.0;
+  throw new Error("Speed model must include a catch-all bracket");
 }
 
 // Cumulative predicted moving hours at each track point.
@@ -181,12 +211,13 @@ function computePassageTimes(track, offroadKmRanges) {
     (s) => s.start_km <= km && km <= s.end_km
   );
 
+  const halfSpanM = (GRADE_SPEED_MODEL.grade_span_m || 300) / 2;
   const grades = new Array(n).fill(0);
   for (let i = 0; i < n; i++) {
     let a = i;
     let b = i;
-    while (a > 0 && (track[i].km - track[a].km) * 1000 < 150) a--;
-    while (b < n - 1 && (track[b].km - track[i].km) * 1000 < 150) b++;
+    while (a > 0 && (track[i].km - track[a].km) * 1000 < halfSpanM) a--;
+    while (b < n - 1 && (track[b].km - track[i].km) * 1000 < halfSpanM) b++;
     const dx = (track[b].km - track[a].km) * 1000;
     if (dx > 1) grades[i] = ((track[b].ele - track[a].ele) / dx) * 100;
   }
@@ -653,7 +684,12 @@ function updatePaceState({
     }
 
     // ===== State =====
-    const STORAGE_KEY = "pace-test-tom:history-v1";
+    function storageSafeRouteName(name) {
+      return String(name || "route").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    }
+    const STORAGE_KEY = `pace-test:${storageSafeRouteName(ROUTE_NAME)}:${Math.round(TOTAL_KM)}km:v1`;
+    const POSITION_CACHE_KEY = `${STORAGE_KEY}:gps-session-cache`;
+    const POSITION_CACHE_MAX_AGE_S = 30;
     function loadHistory() {
       try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
       catch (e) { return []; }
@@ -664,11 +700,14 @@ function updatePaceState({
     let history = loadHistory();
     let pendingNew = null;  // a consultation awaiting stop-resolution
     let pendingSegment = null;  // last segment info for the prompt
+    let poiMode = "next";
+    const activePoiFilters = new Set(["WATER", "FOOD", "SERVICES"]);
     let rGlobal = recomputeRGlobalFromHistory(history);
 
     function recomputeRGlobalFromHistory(h) {
       let r = null;
       for (let i = 1; i < h.length; i++) {
+        if (h[i].excluded || h[i].excluded_segment) continue;
         const prev = findPrevNonExcluded(h, i);
         if (prev === null) continue;
         const dtS = h[i].ts - h[prev].ts;
@@ -678,7 +717,7 @@ function updatePaceState({
         const predH = predictedHSegment(h[prev].km, h[i].km, POLY_KM, CUM_PREDICTED_H);
         const dKm = h[i].km - h[prev].km;
         if (dKm <= 0 || predH <= 0) continue;
-        if (detectStopHeuristic(predH, realizedH)) continue;
+        if (detectStopHeuristic(predH, realizedH) && !h[i].include_stop_segment) continue;
         const rInstVal = rInst(predH, realizedH);
         if (rInstVal === null) continue;
         r = clampRatio(emaUpdate(r, rInstVal));
@@ -691,6 +730,16 @@ function updatePaceState({
         if (!h[j].excluded) return j;
       }
       return null;
+    }
+
+    function poiFilterKey(category) {
+      if (category === "WATER") return "WATER";
+      if (category === "TOILETS" || category === "FUEL") return "SERVICES";
+      return "FOOD";
+    }
+
+    function poiPassesFilter(p) {
+      return activePoiFilters.has(poiFilterKey(p.category));
     }
 
     // ===== Map =====
@@ -708,17 +757,17 @@ function updatePaceState({
       KIOSK: "🏬", ICE_CREAM: "🍦", FAST_FOOD: "🍔", RESTAURANT: "🍽️",
       TOILETS: "🚻", FUEL: "⛽", OTHER: "📍"
     };
-    const poiMarkers = [];
-    for (const p of POIS) {
+    const poiMarkers = new Map();
+    POIS.forEach((p, index) => {
       const icon = L.divIcon({
         className: "poi-icon",
         html: `<div style="font-size:18px; text-shadow: 0 0 3px #000;">${POI_ICONS[p.category] || "📍"}</div>`,
         iconSize: [22, 22], iconAnchor: [11, 11]
       });
-      const m = L.marker([p.lat, p.lon], {icon}).addTo(map);
+      const m = L.marker([p.lat, p.lon], {icon});
       m.bindPopup(renderPoiPopup(p));
-      poiMarkers.push(m);
-    }
+      poiMarkers.set(index, m);
+    });
 
     // Checkpoint markers
     for (const c of CHECKPOINTS) {
@@ -771,6 +820,26 @@ function updatePaceState({
         `<small>Horaires: ${ohRaw}</small>`;
     }
 
+    function focusPoi(index) {
+      const p = POIS[index];
+      const marker = poiMarkers.get(index);
+      if (!p) return;
+      map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15), {animate: true});
+      if (marker) {
+        if (!map.hasLayer(marker)) marker.addTo(map);
+        marker.openPopup();
+      }
+    }
+
+    function applyPoiMarkerVisibility(visibleIndexes) {
+      for (const [index, marker] of poiMarkers.entries()) {
+        const shouldShow = visibleIndexes.has(index);
+        const isShown = map.hasLayer(marker);
+        if (shouldShow && !isShown) marker.addTo(map);
+        if (!shouldShow && isShown) marker.remove();
+      }
+    }
+
     // ===== Time helpers =====
     function formatHm(h) {
       if (h < 0) h = 0;
@@ -788,16 +857,43 @@ function updatePaceState({
     }
 
     // ===== GPS =====
-    function requestPosition() {
+    function loadCachedPosition() {
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(POSITION_CACHE_KEY) || "null");
+        if (!cached || cached.ts === undefined || cached.lat === undefined || cached.lon === undefined) return null;
+        const ageS = Math.round((Date.now() / 1000) - cached.ts);
+        if (ageS < 0 || ageS > POSITION_CACHE_MAX_AGE_S) return null;
+        return {...cached, from_cache: true};
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function saveCachedPosition(fix) {
+      try {
+        sessionStorage.setItem(POSITION_CACHE_KEY, JSON.stringify(fix));
+      } catch (e) {}
+    }
+
+    function requestPosition(opts) {
+      const force = !!(opts && opts.force);
+      if (!force) {
+        const cached = loadCachedPosition();
+        if (cached) return Promise.resolve(cached);
+      }
       return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
           reject(new Error("Géoloc indisponible"));
           return;
         }
         navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({lat: pos.coords.latitude, lon: pos.coords.longitude, ts: Math.round(pos.timestamp / 1000)}),
+          (pos) => {
+            const fix = {lat: pos.coords.latitude, lon: pos.coords.longitude, ts: Math.round(pos.timestamp / 1000)};
+            saveCachedPosition(fix);
+            resolve(fix);
+          },
           (err) => reject(err),
-          {enableHighAccuracy: true, timeout: 12000, maximumAge: 30000}
+          {enableHighAccuracy: true, timeout: 8000, maximumAge: force ? 0 : 30000}
         );
       });
     }
@@ -893,14 +989,17 @@ function updatePaceState({
     function renderPois() {
       const last = history[history.length - 1];
       const curKm = last ? last.km : 0;
-      // Compute forward distance for each POI (circular if loop).
-      const scored = POIS.map(p => ({...p, dist_ahead: distAhead(curKm, p.route_km)}));
-      // Keep only POIs strictly ahead (allow tiny tolerance for the one we might be ON).
-      // On loop: 0..TOTAL_KM range, all POIs ahead.
-      // On linear: drop POIs behind us (negative dist).
-      const upcoming = scored.filter(p => p.dist_ahead >= -0.5);
-      upcoming.sort((a, b) => a.dist_ahead - b.dist_ahead);
-      const visible = upcoming.slice(0, 12);
+      const scored = POIS.map((p, index) => ({...p, poi_index: index, dist_ahead: distAhead(curKm, p.route_km)}))
+        .filter(p => poiPassesFilter(p));
+      let visible;
+      if (poiMode === "all") {
+        visible = scored.slice().sort((a, b) => a.route_km - b.route_km);
+      } else {
+        visible = scored
+          .filter(p => p.dist_ahead >= -0.5 && p.dist_ahead <= 30)
+          .sort((a, b) => a.dist_ahead - b.dist_ahead);
+      }
+      applyPoiMarkerVisibility(new Set(visible.map(p => p.poi_index)));
       document.getElementById("poi-count").textContent = visible.length;
       const now = Date.now();
       const html = visible.map(p => {
@@ -920,19 +1019,26 @@ function updatePaceState({
         const statusCls = `status-${status}`;
         const statusLbl = {open: "🟢 Ouvert", closed: "🔴 Fermé", unknown: "⚪ Inconnu"}[status];
         const oh = p.opening_hours || "horaires inconnus";
-        return `<div class="list-item">
+        const distanceLabel = poiMode === "all"
+          ? `km ${p.route_km.toFixed(1)} • ${p.dist_ahead >= -0.5 ? `dans ${p.dist_ahead.toFixed(1)}km` : `${Math.abs(p.dist_ahead).toFixed(1)}km passés`}`
+          : `km ${p.route_km.toFixed(1)} • dans ${p.dist_ahead.toFixed(1)}km`;
+        return `<button type="button" class="list-item poi-row" data-poi-index="${p.poi_index}">
           <div class="row1">
             <span class="name">${POI_ICONS[p.category] || "📍"} ${p.name}</span>
             <span class="eta">${formatClock(arrival)}</span>
           </div>
           <div class="row2">
-            <span class="km-tag">km ${p.route_km.toFixed(1)} • dans ${p.dist_ahead.toFixed(1)}km • ${formatHm(etaH)}</span>
+            <span class="km-tag">${distanceLabel} • ${formatHm(etaH)}</span>
             <span class="${statusCls}">${statusLbl}</span>
           </div>
           <div class="hours">${oh}</div>
-        </div>`;
+        </button>`;
       }).join("");
-      document.getElementById("poi-list").innerHTML = html || "<div class='small'>Aucun POI à venir</div>";
+      const poiList = document.getElementById("poi-list");
+      poiList.innerHTML = html || "<div class='small'>Aucun POI avec ces filtres</div>";
+      poiList.querySelectorAll(".poi-row").forEach(row => {
+        row.addEventListener("click", () => focusPoi(Number(row.dataset.poiIndex)));
+      });
     }
 
     function renderHistory() {
@@ -940,9 +1046,16 @@ function updatePaceState({
     }
 
     // ===== Actions =====
-    async function recordConsultation() {
+    async function recordConsultation(opts) {
+      const forceGps = !!(opts && opts.forceGps);
+      const silent = !!(opts && opts.silent);
       try {
-        const fix = await requestPosition();
+        const fix = await requestPosition({force: forceGps});
+        const previous = history[history.length - 1];
+        if (previous && Math.abs(previous.ts - fix.ts) <= 1 && haversineM(previous.lat, previous.lon, fix.lat, fix.lon) < 2) {
+          render({recenter: true});
+          return;
+        }
         const proj = projectOnPolyline(fix.lat, fix.lon, POLY_KM);
         const newEntry = {
           ts: fix.ts,
@@ -961,6 +1074,8 @@ function updatePaceState({
         });
 
         newEntry.r_inst = r.rInst;
+        newEntry.stop_suspected = r.stopSuspected;
+        newEntry.segment_info = r.segmentInfo;
 
         if (r.stopSuspected) {
           // Don't commit yet, prompt user
@@ -977,7 +1092,7 @@ function updatePaceState({
         saveHistory(history);
         render({recenter: true});
       } catch (e) {
-        alert("Erreur GPS: " + (e.message || e));
+        if (!silent) alert("Erreur GPS: " + (e.message || e));
       }
     }
 
@@ -986,14 +1101,15 @@ function updatePaceState({
       // The pendingNew is already pushed; mark excluded if user said Yes
       const last = history[history.length - 1];
       if (excluded) {
-        // Exclude the previous segment from ratio. We do this by marking the PRIOR consultation
-        // as the segment's anchor — actually the cleanest: exclude the current new entry's
-        // PREDECESSOR via its `excluded_segment` flag, or simply skip ratio update.
+        // Exclude only the segment ending here. This point remains usable as the next anchor
+        // after a long stop, so the following moving segment is still measured normally.
         last.excluded_segment = true;
+        last.r_inst = null;
         // Recompute global ratio from scratch ignoring this segment
         rGlobal = recomputeRGlobalFromHistory(history);
       } else {
         // User said no, the segment was legit slow → apply ratio update
+        last.include_stop_segment = true;
         const prev = findPrevNonExcluded(history, history.length - 1);
         if (prev !== null) {
           const dtS = last.ts - history[prev].ts;
@@ -1037,15 +1153,39 @@ function updatePaceState({
       history = [];
       rGlobal = null;
       saveHistory(history);
+      try { sessionStorage.removeItem(POSITION_CACHE_KEY); } catch (e) {}
       render();
     }
 
+    function setPoiMode(nextMode) {
+      poiMode = nextMode;
+      document.querySelectorAll("[data-poi-mode]").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.poiMode === poiMode);
+      });
+      renderPois();
+    }
+
+    function togglePoiFilter(filterKey) {
+      if (activePoiFilters.has(filterKey)) activePoiFilters.delete(filterKey);
+      else activePoiFilters.add(filterKey);
+      document.querySelectorAll("[data-poi-filter]").forEach(btn => {
+        btn.classList.toggle("active", activePoiFilters.has(btn.dataset.poiFilter));
+      });
+      renderPois();
+    }
+
     // ===== Wire UI =====
-    document.getElementById("btn-refresh").addEventListener("click", recordConsultation);
+    document.getElementById("btn-refresh").addEventListener("click", () => recordConsultation({forceGps: true}));
     document.getElementById("btn-stop-yes").addEventListener("click", () => resolveStopPrompt(true));
     document.getElementById("btn-stop-no").addEventListener("click", () => resolveStopPrompt(false));
     document.getElementById("btn-export").addEventListener("click", exportHistory);
     document.getElementById("btn-clear").addEventListener("click", clearHistory);
+    document.querySelectorAll("[data-poi-mode]").forEach(btn => {
+      btn.addEventListener("click", () => setPoiMode(btn.dataset.poiMode));
+    });
+    document.querySelectorAll("[data-poi-filter]").forEach(btn => {
+      btn.addEventListener("click", () => togglePoiFilter(btn.dataset.poiFilter));
+    });
 
     window.addEventListener("online", () => {
       const b = document.getElementById("badge-online");
@@ -1058,6 +1198,7 @@ function updatePaceState({
 
     // Initial render — recenter on last known position if we have any history
     render({recenter: history.length > 0});
+    recordConsultation({forceGps: false, silent: true});
   </script>
 </body>
 </html>
