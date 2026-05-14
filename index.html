@@ -526,33 +526,34 @@ function dayJsIndex(code) {
 
 function parseDayRange(s) {
   s = s.trim();
-  if (s === 'PH') return ['PH'];
-  if (s.includes('-')) {
-    const [start, end] = s.split('-').map((x) => x.trim());
-    const si = OSM_ORDER.indexOf(start);
-    const ei = OSM_ORDER.indexOf(end);
-    if (si < 0 || ei < 0) return null;
-    const result = [];
-    if (si <= ei) {
-      for (let i = si; i <= ei; i++) result.push(dayJsIndex(OSM_ORDER[i]));
-    } else {
-      for (let i = si; i < OSM_ORDER.length; i++) result.push(dayJsIndex(OSM_ORDER[i]));
-      for (let i = 0; i <= ei; i++) result.push(dayJsIndex(OSM_ORDER[i]));
-    }
-    return result;
-  }
-  const parts = s.split(',').map((d) => d.trim());
-  const out = [];
-  for (const p of parts) {
-    if (p === 'PH') {
-      out.push('PH');
+  const result = [];
+  for (const part of s.split(',')) {
+    const token = part.trim();
+    if (!token) return null;
+    if (token.toUpperCase() === 'PH') {
+      result.push('PH');
       continue;
     }
-    const di = dayJsIndex(p);
+    if (token.includes('-')) {
+      const [start, end] = token.split('-').map((x) => x.trim());
+      const si = OSM_ORDER.indexOf(start);
+      const ei = OSM_ORDER.indexOf(end);
+      if (si < 0 || ei < 0) return null;
+      const range = [];
+    if (si <= ei) {
+        for (let i = si; i <= ei; i++) range.push(dayJsIndex(OSM_ORDER[i]));
+    } else {
+        for (let i = si; i < OSM_ORDER.length; i++) range.push(dayJsIndex(OSM_ORDER[i]));
+        for (let i = 0; i <= ei; i++) range.push(dayJsIndex(OSM_ORDER[i]));
+    }
+      result.push(...range);
+      continue;
+    }
+    const di = dayJsIndex(token);
     if (di < 0) return null;
-    out.push(di);
+    result.push(di);
   }
-  return out;
+  return [...new Set(result)];
 }
 
 function parseTimeRange(s) {
@@ -587,10 +588,19 @@ function parseOpeningHours(str) {
   if (!s) return { rules: null, raw: str, error: 'empty' };
   if (s === '24/7') return { rules: '24/7', raw: str };
 
-  const ruleStrings = s.split(';').map((r) => r.trim()).filter((r) => r.length > 0);
+  const dayToken = '(?:Mo|Tu|We|Th|Fr|Sa|Su|PH|Ph)';
+  const inlineDayRule = new RegExp(`,\\s+(${dayToken}(?:-${dayToken}|,${dayToken})*)\\s+(?=\\d{1,2}:\\d{2})`, 'g');
+  const normalized = s.replace(inlineDayRule, '; $1 ');
+  const ruleStrings = normalized.split(';').map((r) => r.trim()).filter((r) => r.length > 0);
   const rules = [];
 
   for (const ruleStr of ruleStrings) {
+    if (/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))?\b/.test(ruleStr)) {
+      // Seasonal overrides are rare in our race data. Keep the non-seasonal
+      // rules usable instead of marking the whole opening_hours string unknown.
+      continue;
+    }
+
     const offMatch = ruleStr.match(/^(.+?)\s+(?:off|closed)$/i);
     if (offMatch) {
       const days = parseDayRange(offMatch[1]);
@@ -615,6 +625,7 @@ function parseOpeningHours(str) {
       return { rules: null, raw: str, error: `unrecognized rule: ${ruleStr}` };
     }
   }
+  if (rules.length === 0) return { rules: null, raw: str, error: 'no supported rules' };
   return { rules, raw: str };
 }
 
@@ -1246,9 +1257,12 @@ function updatePaceState({
     function renderPoiPopup(p) {
       const ohRaw = p.opening_hours || "(horaires inconnus)";
       const cat = (p.category || "").toLowerCase();
+      const addr = p.addr ? `<br><small>Adresse: ${escapeHtml(p.addr)}</small>` : "";
+      const note = p.note ? `<br><small>Note: ${escapeHtml(p.note)}</small>` : "";
+      const phone = p.phone ? `<br><small>Tél: ${escapeHtml(p.phone)}</small>` : "";
       return `<strong>${escapeHtml(p.name)}</strong><br>` +
         `<small>${escapeHtml(cat)} — km ${p.route_km.toFixed(1)} (${p.match_distance_m.toFixed(0)}m off-route)</small><br>` +
-        `<small>Horaires: ${escapeHtml(ohRaw)}</small>`;
+        `<small>Horaires: ${escapeHtml(ohRaw)}</small>${addr}${note}${phone}`;
     }
 
     function focusPoi(index) {
