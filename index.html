@@ -1045,8 +1045,10 @@ function updatePaceState({
       if (el) el.textContent = text;
     }
 
+    const HTML_ESCAPE = {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
     function escapeHtml(s) {
-      return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+      const str = (s === null || s === undefined) ? "" : String(s);
+      return str.replace(/[&<>"']/g, c => HTML_ESCAPE[c]);
     }
 
     function statusText(status) {
@@ -1202,10 +1204,10 @@ function updatePaceState({
     for (const c of CHECKPOINTS) {
       const icon = L.divIcon({
         className: "cp-icon",
-        html: `<div style="background:#fbbf24;color:#1a1100;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;border:2px solid #1a1100;">${c.label.split(" ")[0]}</div>`,
+        html: `<div style="background:#fbbf24;color:#1a1100;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;border:2px solid #1a1100;">${escapeHtml(c.label.split(" ")[0])}</div>`,
         iconSize: [28, 28], iconAnchor: [14, 14]
       });
-      L.marker([c.lat, c.lon], {icon}).addTo(map).bindPopup(`<strong>${c.label}</strong><br>km ${c.km.toFixed(1)}`);
+      L.marker([c.lat, c.lon], {icon}).addTo(map).bindPopup(`<strong>${escapeHtml(c.label)}</strong><br>km ${c.km.toFixed(1)}`);
     }
 
     let currentPosMarker = null;
@@ -1244,9 +1246,9 @@ function updatePaceState({
     function renderPoiPopup(p) {
       const ohRaw = p.opening_hours || "(horaires inconnus)";
       const cat = (p.category || "").toLowerCase();
-      return `<strong>${p.name}</strong><br>` +
-        `<small>${cat} — km ${p.route_km.toFixed(1)} (${p.match_distance_m.toFixed(0)}m off-route)</small><br>` +
-        `<small>Horaires: ${ohRaw}</small>`;
+      return `<strong>${escapeHtml(p.name)}</strong><br>` +
+        `<small>${escapeHtml(cat)} — km ${p.route_km.toFixed(1)} (${p.match_distance_m.toFixed(0)}m off-route)</small><br>` +
+        `<small>Horaires: ${escapeHtml(ohRaw)}</small>`;
     }
 
     function focusPoi(index) {
@@ -1434,7 +1436,7 @@ function updatePaceState({
         const remaining = (remainingKm !== null) ? `${remainingKm.toFixed(1)}km` : "✓";
         const thNote = isTheoretical && etaH !== null ? '<div class="small" style="opacity:0.7;">(théorique)</div>' : '';
         return `<div class="checkpoint">
-          <div class="lbl">${c.label}</div>
+          <div class="lbl">${escapeHtml(c.label)}</div>
           <div class="km">km ${c.km.toFixed(1)}</div>
           <div class="arrival${thCls}">${arrivalStr}</div>
           <div class="duration${thCls}">${durationStr}</div>
@@ -1483,14 +1485,14 @@ function updatePaceState({
           : `km ${p.route_km.toFixed(1)} • dans ${p.dist_ahead.toFixed(1)}km`;
         return `<button type="button" class="list-item poi-row" data-poi-index="${p.poi_index}">
           <div class="row1">
-            <span class="name">${POI_ICONS[p.category] || "📍"} ${p.name}</span>
+            <span class="name">${POI_ICONS[p.category] || "📍"} ${escapeHtml(p.name)}</span>
             <span class="eta">${formatClock(arrival)}</span>
           </div>
           <div class="row2">
             <span class="km-tag">${distanceLabel} • ${formatHm(etaH)}</span>
             <span class="${statusCls}">${statusLbl}</span>
           </div>
-          <div class="hours">${oh}</div>
+          <div class="hours">${escapeHtml(oh)}</div>
         </button>`;
       }).join("");
       const poiList = document.getElementById("poi-list");
